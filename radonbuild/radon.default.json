@@ -1,0 +1,20 @@
+{
+	"proxy": {
+		"endpoint": ":3308",
+		"meta-dir": "/data/radon-meta",
+		"peer-address": ":8080"
+	},
+	"audit": {
+		"audit-dir": "/data/radon-audit"
+	},
+	"log": {
+		"level": "INFO"
+	},
+	"monitor": {
+		"monitor-address": "0.0.0.0:13380"
+	},
+	"scatter": {
+		"xa-check-dir": "/data/xacheck"
+	}
+}
+

@@ -1,0 +1,36 @@
+FROM ubuntu:18.04
+
+ENV BACKEND_NAME_HOST_PORT_USER_PASSWORD_MAXCONNECTIONS ""
+ENV BACKEND_REPLICA "0"
+ENV TZ "Asia/Shanghai"
+
+EXPOSE 3308
+VOLUME /data
+
+RUN echo "$TZ" > /etc/localtime && \
+	echo "deb http://mirrors.aliyun.com/ubuntu/ bionic main restricted universe multiverse" >> /etc/apt/sources.list1 && \
+	echo "deb-src http://mirrors.aliyun.com/ubuntu/ bionic main restricted universe multiverse" >> /etc/apt/sources.list1 && \
+	echo "deb http://mirrors.aliyun.com/ubuntu/ bionic-security main restricted universe multiverse" >> /etc/apt/sources.list1 && \
+	echo "deb-src http://mirrors.aliyun.com/ubuntu/ bionic-security main restricted universe multiverse" >> /etc/apt/sources.list1 && \
+	echo "deb http://mirrors.aliyun.com/ubuntu/ bionic-updates main restricted universe multiverse" >> /etc/apt/sources.list1 && \
+	echo "deb-src http://mirrors.aliyun.com/ubuntu/ bionic-updates main restricted universe multiverse" >> /etc/apt/sources.list1 && \
+	echo "deb http://mirrors.aliyun.com/ubuntu/ bionic-backports main restricted universe multiverse" >> /etc/apt/sources.list1 && \
+	echo "deb-src http://mirrors.aliyun.com/ubuntu/ bionic-backports main restricted universe multiverse" >> /etc/apt/sources.list1 && \
+	echo "deb http://mirrors.aliyun.com/ubuntu/ bionic-proposed main restricted universe multiverse" >> /etc/apt/sources.list1 && \
+	echo "deb-src http://mirrors.aliyun.com/ubuntu/ bionic-proposed main restricted universe multiverse" >> /etc/apt/sources.list1 && \
+	cat /etc/apt/sources.list >> /etc/apt/sources.list1 && \
+	cat /etc/apt/sources.list1 > /etc/apt/sources.list && \
+	apt update && \
+	apt-get install tzdata golang git vim curl mysql-client -y && \
+	rm -rf /var/lib/apt/lists && \
+	git clone https://github.com/radondb/radon && \
+	cd radon && \
+	git checkout v1.1.1 && \
+	make build
+
+COPY radon_ctl radon.default.json /radon/bin/
+
+HEALTHCHECK --interval=10s --start-period=10s --timeout=5s --retries=3 CMD ["/radon/bin/radon_ctl", "status"]
+
+CMD ["start"]
+ENTRYPOINT ["/radon/bin/radon_ctl"]

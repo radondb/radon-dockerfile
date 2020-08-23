@@ -1,0 +1,203 @@
+#!/bin/bash
+
+help()
+{
+echo $1
+
+cat << EE
+radon_ctl is command tool for radon
+
+radon_ctl [start|stop|status|hook] options
+Usage:
+	-c configure file path
+EE
+}
+
+is_exist_json_value()
+{
+	local json=$1
+	local key=$2
+	local keyvalue=$3
+	local ret=$(echo "${json}" | awk -F"[{,:}]" '{for(i=1;i<=NF;i++){if($i=="'$key'"){print $(i+1)}}}' | tr -d '"' | grep -w $keyvalue -c)
+
+	echo $ret
+	return $ret
+}
+
+mysqlping()
+{
+	local host=$1
+	local port=$2
+	local user=$3
+	local password=$4
+	local action=$5
+	local rt=0
+
+	mysqladmin ping -h${host} -P${port} -u${user} -p${password}
+	rt=$?
+	if [ -z "$action" ]
+	then
+		return $rt
+	elif [ $action = "waitsuccess" ]
+	then
+		while [ "$rt" != "0" ]
+		do
+			sleep 1	
+			mysqladmin ping -h${host} -P${port} -u${user} -p${password}
+			rt=$?
+		done
+		return $rt
+	fi
+
+	return $rt
+}
+
+add_one_backend()
+{
+	local name=$1
+	local host=$2
+	local port=$3
+	local user=$4
+	local password=$5
+	local maxconnections=$6
+	local current_backend=$(curl http://127.0.0.1:8080/v1/debug/backendz)
+
+	echo "current_backend: $current_backend"
+
+	if [ "$ping_address" != "0" ]
+	then
+		mysqlping $host $port $user $password
+		if [ "$?" != "0" ]
+		then
+			exit 1
+		fi
+		return 0
+	fi
+
+	rt=$(is_exist_json_value "$current_backend" name "$name")
+	if [ "$rt" = "0" ] #not exist, 1 exist
+	then
+		mysqlping $host $port $user $password "waitsuccess"
+		echo "add $name into radon"
+		curl -i -H 'Content-Type: application/json' -X POST -d \
+			'{"name":"'$name'","address":"'$host':'$port'","user":"'$user'","password":"'$password'","max-connections":'$maxconnections'}' \
+			http://127.0.0.1:8080/v1/radon/backend
+	fi
+}
+
+add_database()
+{
+	mysql -uroot -P3308 -h127.0.0.1 -e "create database if not exists ${RADON_DATABASE}"
+	if [ "$?" != "0" ]
+	then
+		echo "[ERROR] create database failed"
+		exit 1
+	fi
+}
+
+add_backend()
+{
+	if [ -z "$BACKEND_NAME_HOST_PORT_USER_PASSWORD_MAXCONNECTIONS" ] || [ "${#BACKEND_NAME_HOST_PORT_USER_PASSWORD_MAXCONNECTIONS}" = "0" ]
+	then
+		cat >&2 <<-'EOE'
+			can't find the backend in env BACKEND_NAME_HOST_PORT_USER_PASSWORD_MAXCONNECTIONS. please set the env.
+		EOE
+		exit 1
+	fi
+
+	echo "backend info: $BACKEND_NAME_HOST_PORT_USER_PASSWORD_MAXCONNECTIONS"
+
+	OLD_IFS="$IFS"
+	IFS=":"
+	for backend in $BACKEND_NAME_HOST_PORT_USER_PASSWORD_MAXCONNECTIONS
+	do
+		local name=`echo $backend | cut -d ',' -f 1 | sed -e 's/^[ ]*//g' | sed -e 's/[ ]*$//g'`
+		local host=`echo $backend | cut -d ',' -f 2 | sed -e 's/^[ ]*//g' | sed -e 's/[ ]*$//g'`
+		local port=`echo $backend | cut -d ',' -f 3 | sed -e 's/^[ ]*//g' | sed -e 's/[ ]*$//g'`
+		local user=`echo $backend | cut -d ',' -f 4 | sed -e 's/^[ ]*//g' | sed -e 's/[ ]*$//g'`
+		local password=`echo $backend | cut -d ',' -f 5 | sed -e 's/^[ ]*//g' | sed -e 's/[ ]*$//g'`
+		local maxconnections=`echo $backend | cut -d ',' -f 6 | sed -e 's/^[ ]*//g' | sed -e 's/[ ]*$//g'`
+	
+		if [ "$BACKEND_REPLICA" = "0" ] || [ -z "$BACKEND_REPLICA" ]
+		then
+			add_one_backend "$name" "$host" "$port" "$user" "$password" "$maxconnections"
+		else
+			i=0	
+			while [ "$i" -lt "$BACKEND_REPLICA" ]
+			do
+				podname=`echo $host | cut -d "." -f 1`
+				svcname=`echo $host | cut -d "." -f 2`
+				add_one_backend "${name}-${i}" "${podname}-${i}.${svcname}" "$port" "$user" "$password" "$maxconnections"
+				let i++
+			done
+		fi
+	done
+	IFS="$OLD_IFS"
+}
+
+ping_address=0
+config_file='/radon/bin/radon.default.json'
+cmd=$1
+shift 1
+
+while getopts "c:h" arg
+do
+	case $arg in
+		c)
+			config_file=$OPTARG
+			;;
+		h)
+			help ""
+			exit 0
+			;;
+		?)
+			help "unknow arg $cmd."
+			exit 1
+			;;
+	esac
+done
+
+case $cmd in
+	start)
+		# add backend if necessary
+		/radon/bin/radon -c $config_file &
+		sleep 2
+		add_backend
+		add_database
+		while [ -n "$(pgrep radon)" ]
+		do
+			sleep 60
+		done
+		;;
+	stop)
+		while [ -n "$(pgrep radon)" ]
+		do
+			kill -2 `pgrep radon`
+			sleep 1
+		done
+		;;
+	status)
+		pgrep radon
+		exit $?
+		;;
+	ping)
+		echo "ping backend"
+		ping_address=1
+		add_backend
+		echo "ping radon"
+		mysqladmin ping -uroot -P3308 -h127.0.0.1
+		if [ "$?" != "0" ]
+		then
+			exit 1
+		fi
+		;;
+	hook)
+		exec "$@"
+		;;
+	*)
+		help "unknow command $cmd."
+		exit 1
+		;;
+esac
+
+exit 0
